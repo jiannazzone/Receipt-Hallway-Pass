@@ -128,13 +128,13 @@ String make_date() {
 
   int onesDigit = tm.Day % 10;
   if ((tm.Day > 3 && tm.Day < 21) || onesDigit > 3) {
-    dateString += "th, ";
+    dateString += "th";
   } else if (onesDigit == 1) {
-    dateString += "st, ";
+    dateString += "st";
   } else if (onesDigit == 2) {
-    dateString += "nd, ";
+    dateString += "nd";
   } else {
-    dateString += "rd, ";
+    dateString += "rd";
   }  // if-else
   return dateString;
 }  // make_date
