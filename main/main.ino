@@ -4,8 +4,11 @@
 #include <Button.h>
 #include <TimeLib.h>
 #include <DS1307RTC.h>
+#include "Adafruit_Thermal.h"
+#include "SoftwareSerial.h"
 #include "secrets.h"
 
+// RTC and time
 const char* ssid = my_SSID;
 const char* password = my_pw;
 const char* host = "http://api.timezonedb.com/v2/get-time-zone?key=YAHNY649CET0&format=xml&fields=formatted&by=zone&zone=America/New_York";
@@ -16,13 +19,19 @@ const char* monthName[12] = {
 const char* weekdays[7] = {
   "Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"
 };
-
 String payload;
 tmElements_t tm;
 bool is12Hour = true;
 
-Button buttonList[4] = { Button(16), Button(14), Button(12), Button(13) };
-String message[4] = { "bathroom", "classroom", "cafeteria", "other" };
+// Thermal Printer
+#define TX_PIN 2
+#define RX_PIN 0
+SoftwareSerial printer_connection(RX_PIN, TX_PIN);
+Adafruit_Thermal printer(&printer_connection);
+
+// Buttons
+Button buttonList[4] = { Button(15), Button(14), Button(12), Button(13) };
+String destination[4] = { "BATHROOM", "CAFETERIA", "CLASSROOM", "OTHER" };
 
 void setup() {
   for (int i = 0; i < 4; i++) {
@@ -32,9 +41,14 @@ void setup() {
   delay(10);
   Serial.println("Serial ready.");
 
+  // Set RTC time
   wifi();
   tzdb();
   parse_response();
+
+  // Start thermal printer
+  printer_connection.begin(9600);
+  printer.begin();
 }  // setup
 
 void wifi() {
@@ -105,9 +119,9 @@ String make_time() {
     timeString += tm.Hour;
   }
   timeString += ":";
-  timeString += leadingZero(tm.Minute);
+  timeString += leading_zero(tm.Minute);
   timeString += ":";
-  timeString += leadingZero(tm.Second);
+  timeString += leading_zero(tm.Second);
 
   if (is12Hour && tm.Hour > 11) {
     timeString += " PM";
@@ -139,7 +153,7 @@ String make_date() {
   return dateString;
 }  // make_date
 
-String leadingZero(int x) {
+String leading_zero(int x) {
   if (x < 10) {
     return "0" + String(x);
   } else {
@@ -147,12 +161,66 @@ String leadingZero(int x) {
   }
 }
 
+void print_pass(int i) {
+  // Heading
+  printer.inverseOn();
+  printer.setSize('L');
+  printer.justify('C');
+  printer.println(F("Highland"));
+  printer.println(F("Hall Pass"));
+  printer.inverseOff();
+  printer.feed(1);
+
+  // Date and Time
+  printer.setSize('M');
+  printer.println(make_date());
+  printer.println(make_time());
+  printer.feed(2);
+
+  // Student Name
+  printer.setSize('L');
+  printer.println(F("______________"));
+  printer.setSize('S');
+  printer.println("Student Name");
+  printer.feed(2);
+
+  // Destination
+  printer.setSize('L');
+  if (i < 2) {
+    // Bathroom or Cafeteria
+    printer.inverseOn();
+    printer.println(destination[i]);
+    printer.inverseOff();
+  } else if (i == 2) {
+    // Classroom
+    printer.print(F("______________"));
+    printer.setSize('S');
+    printer.println(F("'s"));
+    printer.setSize('L');
+    printer.inverseOn();
+    printer.println(F("Classroom"));
+    printer.inverseOff();
+
+  } else {
+    // Other
+    printer.println(F("______________"));
+    printer.setSize('S');
+    printer.println(F("Fill in destination"));
+  }
+  printer.feed(1);
+
+  // Teacher Signature
+  printer.setSize('L');
+  printer.println(F("______________"));
+  printer.setSize('S');
+  printer.println("Teacher Signature");
+  printer.feed(4);
+}
+
 void loop() {
   for (int i = 0; i < 4; i++) {
     if (buttonList[i].pressed()) {
-      Serial.println(make_date());
-      Serial.println(make_time());
-      Serial.println(message[i]);
+      print_pass(i);
     }
   }
 }
