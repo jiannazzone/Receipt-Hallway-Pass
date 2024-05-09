@@ -1,17 +1,18 @@
 #include <ESP8266HTTPClient.h>
 #include <ESP8266WiFi.h>
 #include <WiFiClient.h>
-#include <Button.h>
+#include <Button2.h>
 #include <TimeLib.h>
 #include <DS1307RTC.h>
 #include "Adafruit_Thermal.h"
 #include "SoftwareSerial.h"
 #include "secrets.h"
+#include <Wire.h>
 
 // RTC and time
 const char* ssid = my_SSID;
 const char* password = my_pw;
-const char* host = "http://api.timezonedb.com/v2/get-time-zone?key=YAHNY649CET0&format=xml&fields=formatted&by=zone&zone=America/New_York";
+const String host = "http://api.timezonedb.com/v2/get-time-zone?key=" + String(my_apiKey) + "&format=xml&fields=formatted&by=zone&zone=America/New_York";
 const char* monthName[12] = {
   "Jan", "Feb", "Mar", "Apr", "May", "Jun",
   "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"
@@ -20,7 +21,7 @@ const char* weekdays[7] = {
   "Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"
 };
 String payload;
-tmElements_t tm;
+time_t t;
 bool is12Hour = true;
 
 // Thermal Printer
@@ -30,16 +31,34 @@ SoftwareSerial printer_connection(RX_PIN, TX_PIN);
 Adafruit_Thermal printer(&printer_connection);
 
 // Buttons
-Button buttonList[4] = { Button(15), Button(14), Button(12), Button(13) };
+Button2 bathroomButton;
+Button2 cafeButton;
+Button2 classroomButton;
+Button2 otherButton;
+
 String destination[4] = { "BATHROOM", "CAFETERIA", "CLASSROOM", "OTHER" };
 
 void setup() {
-  for (int i = 0; i < 4; i++) {
-    buttonList[i].begin();
-  }
+  bathroomButton.begin(15, INPUT, false); // GPIO15 behaves different than the others. Must be wired to VCC instead of GND
+  cafeButton.begin(14);
+  classroomButton.begin(12);
+  otherButton.begin(13);
+  
+
+  bathroomButton.setClickHandler(click);
+  cafeButton.setClickHandler(click);
+  classroomButton.setClickHandler(click);
+  otherButton.setClickHandler(click);
+
   Serial.begin(9600);
   delay(10);
   Serial.println("Serial ready.");
+
+  setSyncProvider(RTC.get);
+  if(timeStatus()!= timeSet) 
+     Serial.println("Unable to sync with the RTC");
+  else
+     Serial.println("RTC has set the system time");
 
   // Set RTC time
   wifi();
@@ -88,42 +107,41 @@ void tzdb() {
   payload = http.getString();  // Save response as string
   http.end();                  // Close connection to timezonedb
   WiFi.mode(WIFI_OFF);         // Close connection to WiFi
+  Serial.println("Time fetched.");
+  Serial.println(payload);
 }  // tzdb
 
 void parse_response() {
   int index = payload.indexOf(':');
 
-  tm.Day = payload.substring(index - 5, index - 3).toInt();
-  tm.Month = payload.substring(index - 8, index - 6).toInt();
-  tm.Year = payload.substring(index - 13, index - 9).toInt();
+  int day = payload.substring(index - 5, index - 3).toInt();
+  int month = payload.substring(index - 8, index - 6).toInt();
+  int year = payload.substring(index - 13, index - 9).toInt();
 
-  tm.Hour = payload.substring(index - 2, index).toInt();
-  tm.Minute = payload.substring(index + 1, index + 3).toInt();
-  tm.Second = payload.substring(index + 4, index + 6).toInt();
+  int hour = payload.substring(index - 2, index).toInt();
+  int min = payload.substring(index + 1, index + 3).toInt();
+  int sec = payload.substring(index + 4, index + 6).toInt();
 
-  // Set the RTC
-  if (RTC.write(tm)) {
-    Serial.println("RTC Configured");
-    Serial.println(__DATE__);
-    Serial.println(__TIME__);
-  }
+  setTime(hour, min, sec, day, month, year);
+  t = now();
+  RTC.set(t);
 }  // parse_response
 
 String make_time() {
-  RTC.read(tm);
+  t = now();
   String timeString = "";
-  int hour = tm.Hour;
-  if (is12Hour && tm.Hour > 12) {
-    timeString += tm.Hour - 12;
+  int hr = hour(t);
+  if (is12Hour && hr > 12) {
+    timeString += hr - 12;
   } else {
-    timeString += tm.Hour;
+    timeString += hr;
   }
   timeString += ":";
-  timeString += leading_zero(tm.Minute);
+  timeString += leading_zero(minute(t));
   timeString += ":";
-  timeString += leading_zero(tm.Second);
+  timeString += leading_zero(second(t));
 
-  if (is12Hour && tm.Hour > 11) {
+  if (is12Hour && hr > 11) {
     timeString += " PM";
   } else {
     timeString += " AM";
@@ -134,14 +152,14 @@ String make_time() {
 
 String make_date() {
   String dateString = "";
-  dateString += weekdays[tm.Wday];
+  dateString += weekdays[weekday(t) - 1];
   dateString += " ";
-  dateString += monthName[tm.Month - 1];
+  dateString += monthName[month(t) - 1];
   dateString += " ";
-  dateString += tm.Day;
+  dateString += day(t);
 
-  int onesDigit = tm.Day % 10;
-  if ((tm.Day > 3 && tm.Day < 21) || onesDigit > 3) {
+  int onesDigit = day() % 10;
+  if ((day() > 3 && day() < 21) || onesDigit > 3) {
     dateString += "th";
   } else if (onesDigit == 1) {
     dateString += "st";
@@ -150,6 +168,10 @@ String make_date() {
   } else {
     dateString += "rd";
   }  // if-else
+
+  dateString += ", ";
+  dateString += year(t);
+
   return dateString;
 }  // make_date
 
@@ -218,9 +240,24 @@ void print_pass(int i) {
 }
 
 void loop() {
-  for (int i = 0; i < 4; i++) {
-    if (buttonList[i].pressed()) {
-      print_pass(i);
-    }
+  bathroomButton.loop();
+  cafeButton.loop();
+  classroomButton.loop();
+  otherButton.loop();
+}
+
+void click(Button2& btn) {
+  if (btn == bathroomButton) {
+    Serial.println("bathroom");
+    print_pass(0);
+  } else if (btn == cafeButton) {
+    Serial.println("cafe");
+    print_pass(1);
+  } else if (btn == classroomButton) {
+    Serial.println("class");
+    print_pass(2);
+  } else if (btn == otherButton) {
+    Serial.println("other");
+    print_pass(3);
   }
 }
