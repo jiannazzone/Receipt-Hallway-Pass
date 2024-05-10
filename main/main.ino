@@ -4,14 +4,12 @@
 #include <Button2.h>
 #include <TimeLib.h>
 #include <DS1307RTC.h>
-#include "Adafruit_Thermal.h"
-#include "SoftwareSerial.h"
+#include <Adafruit_Thermal.h>
+#include <SoftwareSerial.h>
 #include "secrets.h"
 #include <Wire.h>
 
 // RTC and time
-const char* ssid = my_SSID;
-const char* password = my_pw;
 const String host = "http://api.timezonedb.com/v2/get-time-zone?key=" + String(my_apiKey) + "&format=xml&fields=formatted&by=zone&zone=America/New_York";
 const char* monthName[12] = {
   "Jan", "Feb", "Mar", "Apr", "May", "Jun",
@@ -23,6 +21,7 @@ const char* weekdays[7] = {
 String payload;
 time_t t;
 bool is12Hour = true;
+bool wifiSuccess = true;
 
 // Thermal Printer
 #define TX_PIN 2
@@ -39,54 +38,75 @@ Button2 otherButton;
 String destination[4] = { "BATHROOM", "CAFETERIA", "CLASSROOM", "OTHER" };
 
 void setup() {
-  bathroomButton.begin(15, INPUT, false); // GPIO15 behaves different than the others. Must be wired to VCC instead of GND
+  Serial.begin(9600);
+  delay(1000);
+  Serial.println("Serial ready.");
+
+  setSyncProvider(RTC.get);
+  if (setTimeWithCompiler(__DATE__, __TIME__)) {
+      Serial.println(__DATE__);
+      Serial.println(__TIME__);
+      Serial.println("Time set by compiler");
+  }
+  
+  if (timeStatus() != timeSet) {
+    Serial.println("Unable to sync with the RTC");
+  } else {
+    Serial.println("RTC has set the system time");
+  }
+
+  wifi();
+  if (wifiSuccess) {
+    tzdb();
+    parse_response();
+  }
+  // Start thermal printer
+  
+  printer_connection.begin(9600);
+  printer.begin();
+  
+  bathroomButton.begin(15, INPUT, false);  // GPIO15 behaves different than the others. Must be wired to VCC instead of GND
   cafeButton.begin(14);
   classroomButton.begin(12);
   otherButton.begin(13);
-  
-
   bathroomButton.setClickHandler(click);
   cafeButton.setClickHandler(click);
   classroomButton.setClickHandler(click);
   otherButton.setClickHandler(click);
-
-  Serial.begin(9600);
-  delay(10);
-  Serial.println("Serial ready.");
-
-  setSyncProvider(RTC.get);
-  if(timeStatus()!= timeSet) 
-     Serial.println("Unable to sync with the RTC");
-  else
-     Serial.println("RTC has set the system time");
-
-  // Set RTC time
-  wifi();
-  tzdb();
-  parse_response();
-
-  // Start thermal printer
-  printer_connection.begin(9600);
-  printer.begin();
+  
 }  // setup
 
 void wifi() {
   WiFi.mode(WIFI_STA);
-  WiFi.disconnect();           // Clear any existing connection
-  WiFi.begin(ssid, password);  // Access WiFi
+  WiFi.disconnect();  // Clear any existing connection
+  if (my_pw != "") {
+    WiFi.begin(my_SSID, my_pw);
+  } else {
+    WiFi.begin(my_SSID);
+  }
 
   Serial.print("Connecting to ");
-  Serial.print(ssid);
+  Serial.print(my_SSID);
   Serial.print(" ...");
 
+  int connectAttemptCount = 0;
   while (WiFi.status() != WL_CONNECTED) {  // Wait for WiFi to connect
+    Serial.println("Waiting to connect");
+    connectAttemptCount += 1;
+    if (connectAttemptCount > 10) {
+      Serial.println("Error connecting to WiFi. Continuing anyway.");
+      wifiSuccess = false;
+      break;
+    }
     delay(1000);
   }
 
-  Serial.println('\n');
-  Serial.println("WiFi connection established");
-  Serial.print("Device's IP address is ");
-  Serial.println(WiFi.localIP());  // Show device's IP address
+  if (wifiSuccess) {
+    Serial.println('\n');
+    Serial.println("WiFi connection established");
+    Serial.print("Device's IP address is ");
+    Serial.println(WiFi.localIP());  // Show device's IP address
+  }
 }  // wifi
 
 void tzdb() {
@@ -233,7 +253,7 @@ void print_pass(int i) {
 
   // Teacher Signature
   printer.setSize('L');
-  printer.println(F("______________"));
+  printer.println(F("ADAM IANNAZZONE"));
   printer.setSize('S');
   printer.println("Teacher Signature");
   printer.feed(4);
@@ -260,4 +280,29 @@ void click(Button2& btn) {
     Serial.println("other");
     print_pass(3);
   }
+}
+
+bool setTimeWithCompiler(const char *datestr, const char *timestr) {
+  const char *monthName[12] = {
+    "Jan", "Feb", "Mar", "Apr", "May", "Jun",
+    "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"
+  };
+  char Month[12];
+  int Day, Year;
+  uint8_t monthIndex;
+  int Hour, Min, Sec;
+
+  // Get date
+  if (sscanf(datestr, "%s %d %d", Month, &Day, &Year) != 3) return false;
+  for (monthIndex = 0; monthIndex < 12; monthIndex++) {
+    if (strcmp(Month, monthName[monthIndex]) == 0) break;
+  }
+  if (monthIndex >= 12) return false;
+
+  // Get time
+  if (sscanf(timestr, "%d:%d:%d", &Hour, &Min, &Sec) != 3) return false;
+  setTime(Hour, Min, Sec+1 , Day, monthIndex + 1, Year);
+  t = now();
+  RTC.set(t);
+  return true;
 }
