@@ -43,14 +43,12 @@ void setup() {
   Serial.println("Serial ready.");
 
   setSyncProvider(RTC.get);
-  if (setTimeWithCompiler(__DATE__, __TIME__)) {
-      Serial.println(__DATE__);
-      Serial.println(__TIME__);
-      Serial.println("Time set by compiler");
-  }
-  
   if (timeStatus() != timeSet) {
-    Serial.println("Unable to sync with the RTC");
+    if (setTimeWithCompiler(__DATE__, __TIME__)) {
+        Serial.println(__DATE__);
+        Serial.println(__TIME__);
+        Serial.println("Time set by compiler");
+    }
   } else {
     Serial.println("RTC has set the system time");
   }
