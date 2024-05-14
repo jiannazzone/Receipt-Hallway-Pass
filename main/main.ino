@@ -134,7 +134,11 @@ public:
                 newYear = doc["year"];
             }
             setTime(newHour, newMinute, newSecond, newDay, newMonth, newYear);
-            RTC.set(now());
+            if (RTC.set(now())) {
+              Serial.println("RTC set.");
+            } else {
+              Serial.println("Error setting RTC");
+            }
             setSuccess = true;
         }
     }
@@ -333,28 +337,29 @@ String destination[4] = { "BATHROOM", "CAFETERIA", "CLASSROOM", "OTHER" };
 
 void setup() {
   Serial.begin(9600);
-  delay(1000);
+  delay(2000);
   Serial.println("Serial ready.");
 
   setSyncProvider(RTC.get);
-  if (timeStatus() != timeSet) {
-    if (setTimeWithCompiler(__DATE__, __TIME__)) {
-        Serial.println(__DATE__);
-        Serial.println(__TIME__);
-        Serial.println("Time set by compiler");
-    }
+  if (RTC.chipPresent()) {
+    Serial.println("RTC found.");
   } else {
-    Serial.println("RTC has set the system time");
+    Serial.println("RTC NOT found.");
   }
+  if(timeStatus()!= timeSet) 
+     Serial.println("Unable to sync with the RTC");
+  else
+     Serial.println("RTC has set the system time");
+
 
   prefs.begin("data", false);
-
   teacherName = prefs.getString("teacherName", "NO TEACHER SET");
   school = prefs.getString("school", "NO SCHOOL SET");
 
   Serial.println("TEACHER: " + teacherName);
   Serial.println("SCHOOL: " + school);
 
+  // Set up Local Server
   server.onNotFound(notFound);
   server.addHandler(new IndexRequestHandler());
   server.addHandler(new TimeRequestHandler());
@@ -363,11 +368,12 @@ void setup() {
 
   startServer();
   serverRunning = true;
-  // Start thermal printer
   
+  // Start thermal printer
   printer_connection.begin(9600);
   printer.begin();
   
+  // Button setup
   bathroomButton.begin(15, INPUT, false);  // GPIO15 behaves different than the others. Must be wired to VCC instead of GND
   cafeButton.begin(14);
   classroomButton.begin(12);
@@ -378,10 +384,6 @@ void setup() {
   otherButton.setClickHandler(click);
   
 }  // setup
-
-
-
-
 
 String make_time() {
   t = now();
@@ -520,29 +522,4 @@ void click(Button2& btn) {
     Serial.println("other");
     print_pass(3);
   }
-}
-
-bool setTimeWithCompiler(const char *datestr, const char *timestr) {
-  const char *monthName[12] = {
-    "Jan", "Feb", "Mar", "Apr", "May", "Jun",
-    "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"
-  };
-  char Month[12];
-  int Day, Year;
-  uint8_t monthIndex;
-  int Hour, Min, Sec;
-
-  // Get date
-  if (sscanf(datestr, "%s %d %d", Month, &Day, &Year) != 3) return false;
-  for (monthIndex = 0; monthIndex < 12; monthIndex++) {
-    if (strcmp(Month, monthName[monthIndex]) == 0) break;
-  }
-  if (monthIndex >= 12) return false;
-
-  // Get time
-  if (sscanf(timestr, "%d:%d:%d", &Hour, &Min, &Sec) != 3) return false;
-  setTime(Hour, Min, Sec+1 , Day, monthIndex + 1, Year);
-  t = now();
-  RTC.set(t);
-  return true;
 }
