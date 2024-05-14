@@ -1,16 +1,27 @@
-#include <ESP8266HTTPClient.h>
+
 #include <ESP8266WiFi.h>
-#include <WiFiClient.h>
 #include <Button2.h>
 #include <TimeLib.h>
 #include <DS1307RTC.h>
 #include <Adafruit_Thermal.h>
 #include <SoftwareSerial.h>
-#include "secrets.h"
 #include <Wire.h>
+#include <ESPAsyncTCP.h>
+#include <ESPAsyncWebSrv.h>
+#include <Preferences.h>
+#include <Regexp.h>
+#include "ArduinoJson.h"
+#include "html.h"
+#include <DNSServer.h>
 
-// RTC and time
-const String host = "http://api.timezonedb.com/v2/get-time-zone?key=" + String(my_apiKey) + "&format=xml&fields=formatted&by=zone&zone=America/New_York";
+AsyncWebServer server(80);
+DNSServer dnsServer;
+IPAddress apIP(8, 8, 4, 4); // The default android DNS
+const char *ssidAP = "hall-pass-printer";
+bool serverRunning = false;
+
+Preferences prefs;
+
 const char* monthName[12] = {
   "Jan", "Feb", "Mar", "Apr", "May", "Jun",
   "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"
@@ -18,10 +29,293 @@ const char* monthName[12] = {
 const char* weekdays[7] = {
   "Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"
 };
-String payload;
+
 time_t t;
 bool is12Hour = true;
-bool wifiSuccess = true;
+
+String teacherName;
+String school;
+
+class IndexRequestHandler : public AsyncWebHandler
+{
+
+public:
+    IndexRequestHandler() {}
+    virtual ~IndexRequestHandler() {}
+
+    bool canHandle(AsyncWebServerRequest *request)
+    {
+        if (request->method() == HTTP_GET)
+        {
+            String url = request->url();
+            if (url == "/")
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    void handleRequest(AsyncWebServerRequest *request)
+    {
+        request->send_P(200, "text/html", indexHTML);
+    }
+};
+
+class TimeRequestHandler : public AsyncWebHandler
+{
+private:
+    bool setSuccess = false;
+
+public:
+    TimeRequestHandler() {}
+    virtual ~TimeRequestHandler() {}
+
+    bool canHandle(AsyncWebServerRequest *request)
+    {
+        if (request->method() == HTTP_PUT || request->method() == HTTP_GET)
+        {
+            MatchState ms;
+            String url = request->url();
+            char urlCharArr[100];
+            url.toCharArray(urlCharArr, url.length() + 1);
+            ms.Target(urlCharArr);
+            char result = ms.Match("/time");
+            if (result > 0)
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    void handleBody(AsyncWebServerRequest *request, uint8_t *data, size_t len, size_t index, size_t total)
+    {
+        if (request->method() == HTTP_PUT)
+        {
+
+            StaticJsonDocument<128> doc;
+
+            DeserializationError error = deserializeJson(doc, data);
+
+            if (error)
+            {
+                return;
+            }
+            int newHour = hour();
+            int newMinute = minute();
+            int newSecond = second();
+            int newDay = day();
+            int newMonth = month();
+            int newYear = year();
+
+            if (doc["hour"] != nullptr)
+            {
+                newHour = doc["hour"];
+            }
+            if (doc["minute"] != nullptr)
+            {
+                newMinute = doc["minute"];
+            }
+            if (doc["second"] != nullptr)
+            {
+                newSecond = doc["second"];
+            }
+            if (doc["day"] != nullptr)
+            {
+                newDay = doc["day"];
+            }
+            if (doc["month"] != nullptr)
+            {
+                newMonth = doc["month"];
+            }
+            if (doc["year"] != nullptr)
+            {
+                newYear = doc["year"];
+            }
+            setTime(newHour, newMinute, newSecond, newDay, newMonth, newYear);
+            RTC.set(now());
+            setSuccess = true;
+        }
+    }
+
+    void handleRequest(AsyncWebServerRequest *request)
+    {
+        if (request->method() == HTTP_PUT || request->method() == HTTP_GET)
+        {
+            if (setSuccess || request->method() == HTTP_GET)
+            {
+
+                String output;
+
+                StaticJsonDocument<128> doc;
+
+                JsonObject object = doc.createNestedObject();
+
+                object["hour"] = hour();
+                object["minute"] = minute();
+                object["second"] = second();
+                object["day"] = day();
+                object["month"] = month();
+                object["year"] = year();
+
+                serializeJson(doc, output);
+                request->send(200, "application/json", output);
+            }
+            else
+            {
+                request->send(400, "application/json", "BAD INPUTS ERROR MESSAGE");
+            }
+        }
+    }
+};
+
+class ServerKillRequestHandler : public AsyncWebHandler
+{
+private:
+    bool setSuccess = false;
+
+public:
+    ServerKillRequestHandler() {}
+    virtual ~ServerKillRequestHandler() {}
+
+    bool canHandle(AsyncWebServerRequest *request)
+    {
+        setSuccess = false;
+        if (request->method() == HTTP_GET)
+        {
+            MatchState ms;
+            String url = request->url();
+            char urlCharArr[100];
+            url.toCharArray(urlCharArr, url.length() + 1);
+            ms.Target(urlCharArr);
+            char result = ms.Match("/serverkill");
+            if (result > 0)
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    void handleBody(AsyncWebServerRequest *request, uint8_t *data, size_t len, size_t index, size_t total)
+    {
+    }
+
+    void handleRequest(AsyncWebServerRequest *request)
+    {
+        if (request->method() == HTTP_GET)
+        {
+
+            String output = "success";
+            server.end();
+            WiFi.softAPdisconnect(true);
+            serverRunning = false;
+
+            request->send(200, "application/json", output);
+        }
+    }
+};
+
+class SettingsRequestHandler : public AsyncWebHandler
+{
+private:
+    bool setSuccess = false;
+
+public:
+    SettingsRequestHandler() {}
+    virtual ~SettingsRequestHandler() {}
+
+    bool canHandle(AsyncWebServerRequest *request)
+    {
+        setSuccess = false;
+        if (request->method() == HTTP_PUT || request->method() == HTTP_GET)
+        {
+            MatchState ms;
+            String url = request->url();
+            char urlCharArr[100];
+            url.toCharArray(urlCharArr, url.length() + 1);
+            ms.Target(urlCharArr);
+            char result = ms.Match("/settings");
+            if (result > 0)
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    void handleBody(AsyncWebServerRequest *request, uint8_t *data, size_t len, size_t index, size_t total)
+    {
+        if (request->method() == HTTP_PUT)
+        {
+
+            StaticJsonDocument<256> doc;
+
+            DeserializationError error = deserializeJson(doc, data);
+
+            if (error)
+            {
+                return;
+            }
+            if (doc["teacherName"] != nullptr)
+            {
+                teacherName = doc["teacherName"].as<String>();
+                prefs.putString("teacherName", teacherName);
+                Serial.println("Setting teacher to: " + teacherName);
+            }
+            if (doc["school"] != nullptr)
+            {
+                school = doc["school"].as<String>();
+                prefs.putString("school", school);
+                Serial.println("Setting school to: " + school);
+            }
+            setSuccess = true;
+        }
+    }
+
+    void handleRequest(AsyncWebServerRequest *request)
+    {
+        if (request->method() == HTTP_PUT || request->method() == HTTP_GET)
+        {
+            if (setSuccess || request->method() == HTTP_GET)
+            {
+
+                String output;
+
+                StaticJsonDocument<128> doc;
+
+                JsonObject object = doc.createNestedObject();
+
+                object["teacherName"] = teacherName;
+                object["school"] = school;
+               
+                
+                serializeJson(doc, output);
+                request->send(200, "application/json", output);
+            }
+            else
+            {
+                request->send(400, "application/json", "BAD INPUT ERROR MESSAGE");
+            }
+        }
+    }
+};
+// notFound will return an error message if any non existant endpoints are accessed on the webserver.
+void notFound(AsyncWebServerRequest *request)
+{
+    request->redirect("/");
+}
+
+void startServer()
+{
+    WiFi.mode(WIFI_AP);
+    WiFi.softAP(ssidAP);
+    WiFi.softAPConfig(apIP, apIP, IPAddress(255, 255, 255, 0));
+
+    server.begin();
+    dnsServer.start(53, "*", WiFi.softAPIP());
+}
 
 // Thermal Printer
 #define TX_PIN 2
@@ -53,11 +347,22 @@ void setup() {
     Serial.println("RTC has set the system time");
   }
 
-  wifi();
-  if (wifiSuccess) {
-    tzdb();
-    parse_response();
-  }
+  prefs.begin("data", false);
+
+  teacherName = prefs.getString("teacherName", "NO TEACHER SET");
+  school = prefs.getString("school", "NO SCHOOL SET");
+
+  Serial.println("TEACHER: " + teacherName);
+  Serial.println("SCHOOL: " + school);
+
+  server.onNotFound(notFound);
+  server.addHandler(new IndexRequestHandler());
+  server.addHandler(new TimeRequestHandler());
+  server.addHandler(new ServerKillRequestHandler());
+  server.addHandler(new SettingsRequestHandler());
+
+  startServer();
+  serverRunning = true;
   // Start thermal printer
   
   printer_connection.begin(9600);
@@ -74,76 +379,9 @@ void setup() {
   
 }  // setup
 
-void wifi() {
-  WiFi.mode(WIFI_STA);
-  WiFi.disconnect();  // Clear any existing connection
-  if (my_pw != "") {
-    WiFi.begin(my_SSID, my_pw);
-  } else {
-    WiFi.begin(my_SSID);
-  }
 
-  Serial.print("Connecting to ");
-  Serial.print(my_SSID);
-  Serial.print(" ...");
 
-  int connectAttemptCount = 0;
-  while (WiFi.status() != WL_CONNECTED) {  // Wait for WiFi to connect
-    Serial.println("Waiting to connect");
-    connectAttemptCount += 1;
-    if (connectAttemptCount > 10) {
-      Serial.println("Error connecting to WiFi. Continuing anyway.");
-      wifiSuccess = false;
-      break;
-    }
-    delay(1000);
-  }
 
-  if (wifiSuccess) {
-    Serial.println('\n');
-    Serial.println("WiFi connection established");
-    Serial.print("Device's IP address is ");
-    Serial.println(WiFi.localIP());  // Show device's IP address
-  }
-}  // wifi
-
-void tzdb() {
-  int httpCode = 0;  // Variable to hold received data
-  HTTPClient http;   // Declare an object of class HTTPClient
-  WiFiClient client;
-  Serial.println("Connecting to TimezoneDB...");
-
-  http.begin(client, host);  // Connect to site
-  httpCode = http.GET();     // Check if data is coming in
-
-  while (httpCode == 0) {      // if no data is in
-    delay(1000);               // wait a sec
-    http.begin(client, host);  // and try again
-    httpCode = http.GET();
-  }
-
-  payload = http.getString();  // Save response as string
-  http.end();                  // Close connection to timezonedb
-  WiFi.mode(WIFI_OFF);         // Close connection to WiFi
-  Serial.println("Time fetched.");
-  Serial.println(payload);
-}  // tzdb
-
-void parse_response() {
-  int index = payload.indexOf(':');
-
-  int day = payload.substring(index - 5, index - 3).toInt();
-  int month = payload.substring(index - 8, index - 6).toInt();
-  int year = payload.substring(index - 13, index - 9).toInt();
-
-  int hour = payload.substring(index - 2, index).toInt();
-  int min = payload.substring(index + 1, index + 3).toInt();
-  int sec = payload.substring(index + 4, index + 6).toInt();
-
-  setTime(hour, min, sec, day, month, year);
-  t = now();
-  RTC.set(t);
-}  // parse_response
 
 String make_time() {
   t = now();
@@ -206,7 +444,7 @@ void print_pass(int i) {
   printer.inverseOn();
   printer.setSize('L');
   printer.justify('C');
-  printer.println(F("Highland"));
+  printer.println(school.c_str());
   printer.println(F("Hall Pass"));
   printer.inverseOff();
   printer.feed(1);
@@ -251,13 +489,17 @@ void print_pass(int i) {
 
   // Teacher Signature
   printer.setSize('L');
-  printer.println(F("ADAM IANNAZZONE"));
+  printer.println(teacherName.c_str());
   printer.setSize('S');
   printer.println("Teacher Signature");
   printer.feed(4);
 }
 
 void loop() {
+  if (serverRunning)
+    {
+        dnsServer.processNextRequest();
+    }
   bathroomButton.loop();
   cafeButton.loop();
   classroomButton.loop();
